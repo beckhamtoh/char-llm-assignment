@@ -156,3 +156,73 @@ class DecoderOnlyTransformer(nn.Module):
         logits = self.project_to_vocab(x)
         
         return logits
+    
+
+class CharLSTM(nn.Module):
+    """LSTM-based character-level language model.
+    
+    Components:
+    - Token embeddings: maps token ids to D-dim vectors
+    - Stacked LSTM layers
+    - Output projection to vocabulary
+    
+    Args:
+        vocab_size: Vocabulary size V.
+        d_model: Hidden size D (LSTM hidden dimension).
+        n_layers: Number of LSTM layers.
+    """
+    vocab_size: int
+    d_model: int
+    n_layers: int
+    
+    def setup(self):
+        # Token embedding table E with shape (V, D)
+        self.tok_embed = nn.Embed(self.vocab_size, self.d_model)
+        
+        # Stack of LSTM cells
+        self.lstm_cells = [nn.LSTMCell() for _ in range(self.n_layers)]
+        
+        # Output projection to vocabulary
+        self.project_to_vocab = nn.Dense(self.vocab_size, use_bias=False)
+    
+    def __call__(self, idx):
+        """Forward pass.
+        
+        Args:
+            idx: Token ids of shape (B, T), dtype int32/int64.
+            
+        Returns:
+            logits: (B, T, V) unnormalized vocabulary scores for next-token prediction.
+        """
+        B, T = idx.shape
+        
+        # Token embeddings -> (B, T, D)
+        x = self.tok_embed(idx)
+        
+        # Initialize LSTM states for all layers
+        carry = []
+        for layer_idx in range(self.n_layers):
+            c = jnp.zeros((B, self.d_model))
+            h = jnp.zeros((B, self.d_model))
+            carry.append((c, h))
+        
+        # Process sequence step by step
+        outputs = []
+        for t in range(T):
+            xt = x[:, t, :]  # (B, D)
+            
+            # Pass through each LSTM layer
+            for layer_idx in range(self.n_layers):
+                (c, h) = carry[layer_idx]
+                (c, h), xt = self.lstm_cells[layer_idx](carry[layer_idx], xt)
+                carry[layer_idx] = (c, h)
+            
+            outputs.append(xt)
+        
+        # Stack outputs -> (B, T, D)
+        x = jnp.stack(outputs, axis=1)
+        
+        # Project to vocabulary -> (B, T, V)
+        logits = self.project_to_vocab(x)
+        
+        return logits
