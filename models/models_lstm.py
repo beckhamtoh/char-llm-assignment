@@ -21,7 +21,7 @@ class LSTMStack(nn.Module):
         cells = tuple(nn.LSTMCell(features=H, name=f"lstm_{i}") for i in range(self.n_layers))
 
         if init_state is None:
-            states = tuple(cell.initialize_carry(jax.random.PRNGKey(0), (B,), H) for cell in cells)
+            states = tuple(cell.initialize_carry(jax.random.PRNGKey(0), (B,), size=H) for cell in cells)
         else:
             states = init_state
 
