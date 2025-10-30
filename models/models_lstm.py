@@ -18,7 +18,7 @@ class LSTMStack(nn.Module):
 
     Returns:
       y: (B, T, H)  top-layer hidden states
-      final_state:  tuple of per-layer LSTM states (each has .c and .h of shape (B, H))
+      final_state:  tuple/list of per-layer LSTM states (each state has leaves shaped (B, H))
     """
     hidden_size: int
     n_layers: int
@@ -32,18 +32,31 @@ class LSTMStack(nn.Module):
         # Build per-layer cells
         cells = tuple(nn.LSTMCell(features=H, name=f"lstm_{i}") for i in range(self.n_layers))
 
-        # Initialize states with explicit (B, H) zeros to avoid version-specific API differences
+        # Create a zero-carry that matches the *structure* of your Flax version.
+        def _proto_carry(cell):
+            # Try API with size; fall back to without; final fallback to a simple (c,h)
+            try:
+                return cell.initialize_carry(jax.random.PRNGKey(0), (), size=H)
+            except TypeError:
+                try:
+                    return cell.initialize_carry(jax.random.PRNGKey(0), ())
+                except TypeError:
+                    return (jnp.zeros((H,), x.dtype), jnp.zeros((H,), x.dtype))
+
         if init_state is None:
-            # Use the first cell to get the state type, then create zero states with (B, H)
-            proto_state = cells[0].initialize_carry(jax.random.PRNGKey(0), ())
-            def zero_state():
-                return type(proto_state)(
-                    c=jnp.zeros((B, H), dtype=x.dtype),
-                    h=jnp.zeros((B, H), dtype=x.dtype),
-                )
-            states = tuple(zero_state() for _ in range(self.n_layers))
+            proto = _proto_carry(cells[0])
+
+            def _zeros_like_leaf(_leaf):
+                return jnp.zeros((B, H), dtype=x.dtype)
+
+            # Make one zero-carry with the right batch/hidden shapes, keeping the same pytree structure as proto
+            zero_carry_one_layer = jax.tree_map(_zeros_like_leaf, proto)
+
+            # Repeat per layer
+            states = tuple(jax.tree_map(lambda z: z, zero_carry_one_layer) for _ in range(self.n_layers))
         else:
-            states = init_state  # expect tuple of length n_layers
+            # Expect a tuple/list of length n_layers; each element must match the LSTMCell's expected state structure
+            states = init_state
 
         def step(carry, x_t):
             layer_states = carry
