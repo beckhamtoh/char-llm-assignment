@@ -179,8 +179,8 @@ class CharLSTM(nn.Module):
         # Token embedding table E with shape (V, D)
         self.tok_embed = nn.Embed(self.vocab_size, self.d_model)
         
-        # Stack of LSTM cells
-        self.lstm_cells = [nn.LSTMCell() for _ in range(self.n_layers)]
+        # Stack of LSTM cells - each needs to know the hidden dimension
+        self.lstm_cells = [nn.LSTMCell(features=self.d_model) for _ in range(self.n_layers)]
         
         # Output projection to vocabulary
         self.project_to_vocab = nn.Dense(self.vocab_size, use_bias=False)
