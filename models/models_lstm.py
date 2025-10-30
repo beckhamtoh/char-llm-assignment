@@ -12,36 +12,55 @@ class LSTMStack(nn.Module):
         """
         x: (B, T, D)
         init_state: tuple of per-layer LSTM states, or None to init zeros.
-                    Each layer state is an nn.LSTMCell.LSTMState(c, h).
         Returns:
           y: (B, T, H)
           final_state: tuple of per-layer LSTM states
         """
         B, T, _ = x.shape
         H = self.hidden_size
-
-        # Build per-layer cells (use `features`, not `hidden_size`)
         cells = tuple(nn.LSTMCell(features=H, name=f"lstm_{i}") for i in range(self.n_layers))
 
-        # Initial state: tuple of LSTMState for each layer
         if init_state is None:
-            # OK to use a fixed RNG here; it only zeros the carry
             states = tuple(cell.initialize_carry(jax.random.PRNGKey(0), (B,), H) for cell in cells)
         else:
-            states = init_state  # expect a tuple(len=n_layers) of LSTMState
+            states = init_state
 
         def step(carry, x_t):
             states = carry
             new_states = []
             inp = x_t
             for i, cell in enumerate(cells):
-                state_i, out = cell(states[i], inp)   # returns (new_state, y_t)
+                state_i, out = cell(states[i], inp)
                 out = nn.Dropout(rate=self.dropout)(out, deterministic=deterministic)
                 new_states.append(state_i)
-                inp = out                              # feed to next layer
+                inp = out
             return tuple(new_states), inp
 
-        # scan over time (time-major in, batch-major out)
         final_states, y_seq = jax.lax.scan(step, states, jnp.swapaxes(x, 0, 1))
         y = jnp.swapaxes(y_seq, 0, 1)  # (B, T, H)
         return y, final_states
+
+class LSTMCharLM(nn.Module):
+    vocab_size: int
+    d_model: int
+    n_layers: int
+    tie_weights: bool = True
+    dropout: float = 0.0
+
+    def setup(self):
+        self.tok_embed = nn.Embed(num_embeddings=self.vocab_size, features=self.d_model)
+        self.rnn = LSTMStack(hidden_size=self.d_model, n_layers=self.n_layers, dropout=self.dropout)
+        self.final_ln = nn.LayerNorm()
+        if not self.tie_weights:
+            self.out_proj = nn.Dense(self.vocab_size, use_bias=False)
+
+    def __call__(self, idx, *, init_state=None, deterministic: bool = True):
+        x = self.tok_embed(idx)                # (B, T, D)
+        y, final_state = self.rnn(x, init_state=init_state, deterministic=deterministic)
+        y = self.final_ln(y)
+        if self.tie_weights:
+            E = self.tok_embed.embedding      # (V, D)
+            logits = jnp.einsum('btd,vd->btv', y, E)
+        else:
+            logits = nn.Dense(self.vocab_size, use_bias=False)(y)
+        return logits, final_state
