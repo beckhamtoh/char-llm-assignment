@@ -1,3 +1,4 @@
+# %%writefile models/models_lstm.py
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
@@ -21,7 +22,11 @@ class LSTMStack(nn.Module):
         cells = tuple(nn.LSTMCell(features=H, name=f"lstm_{i}") for i in range(self.n_layers))
 
         if init_state is None:
-            states = tuple(cell.initialize_carry(jax.random.PRNGKey(0), (B,), size=H) for cell in cells)
+            # NOTE: size is keyword-only in this Flax version
+            states = tuple(
+                cell.initialize_carry(jax.random.PRNGKey(0), (B,), size=H)
+                for cell in cells
+            )
         else:
             states = init_state
 
