@@ -6,19 +6,19 @@ import flax.linen as nn
 
 class LSTMStack(nn.Module):
     """
-    A simple stacked LSTM implemented with flax.linen LSTMCell and jax.lax.scan.
+    Stacked LSTM using flax.linen.LSTMCell + jax.lax.scan.
 
     Args:
-      hidden_size: int, the number of features in each LSTM layer (H)
-      n_layers:    int, number of stacked LSTM layers
-      dropout:     float, dropout rate applied to each layer's output (0.0 disables)
+      hidden_size: int, features H per layer
+      n_layers:    int, number of layers
+      dropout:     float, dropout rate on each layer's output
 
     Input:
-      x: (B, T, D) float32 — sequence of embeddings
+      x: (B, T, D)  embeddings
 
     Returns:
-      y: (B, T, H) float32 — sequence of hidden states from the top LSTM layer
-      final_state: tuple of length n_layers, each element is an LSTMState(c, h)
+      y: (B, T, H)  top-layer hidden states
+      final_state:  tuple of per-layer LSTM states (each has .c and .h of shape (B, H))
     """
     hidden_size: int
     n_layers: int
@@ -29,58 +29,49 @@ class LSTMStack(nn.Module):
         B, T, _ = x.shape
         H = self.hidden_size
 
-        # Build per-layer LSTM cells (features=H)
+        # Build per-layer cells
         cells = tuple(nn.LSTMCell(features=H, name=f"lstm_{i}") for i in range(self.n_layers))
 
-        # Initialize carry for each layer if not provided (API variant without size kwarg)
+        # Initialize states with explicit (B, H) zeros to avoid version-specific API differences
         if init_state is None:
-            states = tuple(
-                cell.initialize_carry(jax.random.PRNGKey(0), (B,))
-                for cell in cells
-            )
+            # Use the first cell to get the state type, then create zero states with (B, H)
+            proto_state = cells[0].initialize_carry(jax.random.PRNGKey(0), ())
+            def zero_state():
+                return type(proto_state)(
+                    c=jnp.zeros((B, H), dtype=x.dtype),
+                    h=jnp.zeros((B, H), dtype=x.dtype),
+                )
+            states = tuple(zero_state() for _ in range(self.n_layers))
         else:
-            # Expect a tuple of nn.LSTMCell.LSTMState for each layer
-            states = init_state
+            states = init_state  # expect tuple of length n_layers
 
         def step(carry, x_t):
-            """One time step through all layers."""
             layer_states = carry
             inp = x_t
             new_states = []
             for i, cell in enumerate(cells):
-                state_i, out = cell(layer_states[i], inp)   # out: (B, H)
-                # Residual-style dropout on layer outputs (simple, effective)
+                state_i, out = cell(layer_states[i], inp)  # out: (B, H)
                 out = nn.Dropout(rate=self.dropout)(out, deterministic=deterministic)
                 new_states.append(state_i)
                 inp = out
-            return tuple(new_states), inp  # carry (states), output (top layer)
+            return tuple(new_states), inp  # carry, y_t (top layer)
 
-        # Scan across time: time-major in, batch-major out
-        final_states, y_time_major = jax.lax.scan(step, states, jnp.swapaxes(x, 0, 1))
-        y = jnp.swapaxes(y_time_major, 0, 1)  # (B, T, H)
+        # Time-major for scan, then back to batch-major
+        final_states, y_time = jax.lax.scan(step, states, jnp.swapaxes(x, 0, 1))
+        y = jnp.swapaxes(y_time, 0, 1)  # (B, T, H)
         return y, final_states
 
 
 class LSTMCharLM(nn.Module):
     """
-    Character-level language model:
-      token embedding -> stacked LSTM -> LayerNorm -> projection to vocab.
-
-    - Weight tying (default): reuse the embedding matrix E to project to logits
-      via einsum: logits[b,t,v] = dot(y[b,t,:], E[v,:]).
+    Character LM: token embedding -> stacked LSTM -> LayerNorm -> projection.
 
     Args:
-      vocab_size: int, number of characters (V)
-      d_model:    int, embedding size and LSTM hidden size (use same for simplicity)
-      n_layers:   int, number of stacked LSTM layers
-      tie_weights: bool, enable/disable weight tying (default True)
-      dropout:    float, dropout rate inside LSTM stack outputs
-
-    __call__(idx, init_state=None, deterministic=True):
-      idx: (B, T) int32 — token ids in [0, V)
-      Returns:
-        logits: (B, T, V) float32 — unnormalized scores
-        final_state: tuple of LSTM states for each layer
+      vocab_size: int (V)
+      d_model:    int (embedding dim and hidden size H)
+      n_layers:   int
+      tie_weights: bool (reuse embedding matrix for output projection)
+      dropout:     float (dropout inside LSTM stack)
     """
     vocab_size: int
     d_model: int
@@ -96,19 +87,17 @@ class LSTMCharLM(nn.Module):
             self.out_proj = nn.Dense(self.vocab_size, use_bias=False)
 
     def __call__(self, idx, *, init_state=None, deterministic: bool = True):
-        # Embedding lookup
+        # Embedding
         x = self.tok_embed(idx)  # (B, T, D)
 
-        # Run stacked LSTM
-        y, final_state = self.rnn(x, init_state=init_state, deterministic=deterministic)  # y: (B, T, D)
+        # LSTM stack
+        y, final_state = self.rnn(x, init_state=init_state, deterministic=deterministic)  # (B, T, D)
 
-        # Stabilize with LayerNorm before projection
+        # Normalize then project
         y = self.final_ln(y)
 
-        # Project to logits
         if self.tie_weights:
-            # Weight tying with the input embedding table E (V, D)
-            E = self.tok_embed.embedding
+            E = self.tok_embed.embedding  # (V, D)
             logits = jnp.einsum("btd,vd->btv", y, E)
         else:
             logits = self.out_proj(y)
