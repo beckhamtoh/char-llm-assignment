@@ -113,8 +113,7 @@ class RoPEAttention(nn.Module):
     """Multi-head Self-Attention with RoPE.
     
     Applies RoPE to queries and keys before computing attention,
-    following equation (16) from the paper:
-    q^T_m k_n = (R^d_{Θ,m} W_q x_m)^T (R^d_{Θ,n} W_k x_n)
+    following equation (16) from the paper.
     
     Args:
         d_model: Hidden size D.
@@ -129,14 +128,50 @@ class RoPEAttention(nn.Module):
         assert self.d_model % self.n_heads == 0, "d_model must be divisible by n_heads"
         self.d_head = self.d_model // self.n_heads
         
-        # Standard QKV projections (equation (1) in paper)
+        # Standard QKV projections
         self.wq = nn.Dense(self.d_model, use_bias=False)
         self.wk = nn.Dense(self.d_model, use_bias=False)
         self.wv = nn.Dense(self.d_model, use_bias=False)
         self.wo = nn.Dense(self.d_model, use_bias=False)
         
-        # RoPE for positional encoding
-        self.rope = RotaryPositionalEmbedding(self.d_model, self.max_len)
+        # Precompute RoPE frequencies
+        # Following paper: Θ = {θ_i = 10000^(-2(i-1)/d), i ∈ [1, 2, ..., d/2]}
+        inv_freq = 1.0 / (10000 ** (jnp.arange(0, self.d_model, 2).astype(jnp.float32) / self.d_model))
+        position = jnp.arange(self.max_len, dtype=jnp.float32)
+        freqs = jnp.outer(position, inv_freq)  # (max_len, d_model/2)
+        
+        # Store cos and sin as instance variables (not parameters)
+        self.cos_cached = jnp.cos(freqs)  # (max_len, d_model/2)
+        self.sin_cached = jnp.sin(freqs)  # (max_len, d_model/2)
+    
+    def apply_rotary_embedding(self, x, seq_len):
+        """Apply rotary embedding using equation (34) from the paper.
+        
+        Args:
+            x: Input tensor of shape (B, T, D)
+            seq_len: Sequence length T
+        Returns:
+            Rotated tensor of shape (B, T, D)
+        """
+        # Get cos and sin for current sequence length
+        cos = self.cos_cached[:seq_len]  # (T, d_model/2)
+        sin = self.sin_cached[:seq_len]  # (T, d_model/2)
+        
+        # Repeat each element twice: [a, b, c] -> [a, a, b, b, c, c]
+        cos = jnp.repeat(cos, 2, axis=-1)  # (T, d_model)
+        sin = jnp.repeat(sin, 2, axis=-1)  # (T, d_model)
+        
+        # Add batch dimension for broadcasting
+        cos = cos[None, :, :]  # (1, T, d_model)
+        sin = sin[None, :, :]  # (1, T, d_model)
+        
+        # Create rotated version: [-x2, x1, -x4, x3, ...]
+        x_reshape = x.reshape(x.shape[0], x.shape[1], -1, 2)  # (B, T, d_model/2, 2)
+        x_rotated = jnp.stack([-x_reshape[..., 1], x_reshape[..., 0]], axis=-1)  # (B, T, d_model/2, 2)
+        x_rotated = x_rotated.reshape(x.shape)  # (B, T, d_model)
+        
+        # Apply rotation: equation (34)
+        return x * cos + x_rotated * sin
     
     def __call__(self, x, mask=None):
         """
@@ -148,36 +183,34 @@ class RoPEAttention(nn.Module):
         """
         B, T, D = x.shape
         
-        # Linear projections: equation (1) from paper
+        # Linear projections
         q = self.wq(x)  # (B, T, D)
         k = self.wk(x)  # (B, T, D)
         v = self.wv(x)  # (B, T, D)
         
-        # Apply RoPE to queries and keys: equation (14) from paper
-        # f_q(x_m, m) = R^d_{Θ,m} W_q x_m
-        # f_k(x_n, n) = R^d_{Θ,n} W_k x_n
-        q = self.rope.apply_rotary_embedding(q, T)
-        k = self.rope.apply_rotary_embedding(k, T)
+        # Apply RoPE to queries and keys
+        q = self.apply_rotary_embedding(q, T)
+        k = self.apply_rotary_embedding(k, T)
         
         # Reshape for multi-head attention
-        q = q.reshape(B, T, self.n_heads, self.d_head).transpose(0, 2, 1, 3)  # (B, n_heads, T, d_head)
-        k = k.reshape(B, T, self.n_heads, self.d_head).transpose(0, 2, 1, 3)  # (B, n_heads, T, d_head)
-        v = v.reshape(B, T, self.n_heads, self.d_head).transpose(0, 2, 1, 3)  # (B, n_heads, T, d_head)
+        q = q.reshape(B, T, self.n_heads, self.d_head).transpose(0, 2, 1, 3)
+        k = k.reshape(B, T, self.n_heads, self.d_head).transpose(0, 2, 1, 3)
+        v = v.reshape(B, T, self.n_heads, self.d_head).transpose(0, 2, 1, 3)
         
-        # Scaled dot-product attention: equation (2) from paper
-        scores = jnp.matmul(q, k.transpose(0, 1, 3, 2)) / jnp.sqrt(self.d_head)  # (B, n_heads, T, T)
+        # Scaled dot-product attention
+        scores = jnp.matmul(q, k.transpose(0, 1, 3, 2)) / jnp.sqrt(self.d_head)
         
-        # Apply causal mask if provided
+        # Apply causal mask
         if mask is not None:
             scores = jnp.where(mask, scores, -1e10)
         
         # Attention weights and output
-        attn_weights = jax.nn.softmax(scores, axis=-1)  # (B, n_heads, T, T)
-        attn_output = jnp.matmul(attn_weights, v)  # (B, n_heads, T, d_head)
+        attn_weights = jax.nn.softmax(scores, axis=-1)
+        attn_output = jnp.matmul(attn_weights, v)
         
         # Reshape and project output
-        attn_output = attn_output.transpose(0, 2, 1, 3).reshape(B, T, D)  # (B, T, D)
-        output = self.wo(attn_output)  # (B, T, D)
+        attn_output = attn_output.transpose(0, 2, 1, 3).reshape(B, T, D)
+        output = self.wo(attn_output)
         
         return output
     
