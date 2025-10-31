@@ -44,38 +44,186 @@ class MLP(nn.Module):
                 x = nn.Dense(self.d_model)(x)
                 return x
 
-class DecoderBlock(nn.Module):
-    """A single decoder block (Pre-LayerNorm + Self-Attn + MLP + residuals).
-
-    Pre-LayerNorm improves training stability. Residual connections are used after
-    attention and MLP sublayers. The attention is causal when a causal mask is passed
-    (so each position can only attend to previous or current positions).
-
+class RotaryPositionalEmbedding(nn.Module):
+    """Rotary Position Embedding (RoPE) from RoFormer paper.
+    
+    RoPE encodes absolute position with rotation matrix and incorporates
+    explicit relative position dependency in self-attention formulation.
+    
+    Based on equation (14) and (15) from the paper:
+    f(x_m, m) = R^d_{Θ,m} W x_m
+    
     Args:
-      d_model: Hidden size D.
-      n_heads: Number of attention heads.
-
-    Input/Output shape: (B, T, D)
+        d_model: Hidden size D (must be even).
+        max_len: Maximum sequence length.
     """
+    d_model: int
+    max_len: int
+    
+    def setup(self):
+        # Following paper: Θ = {θ_i = 10000^(-2(i-1)/d), i ∈ [1, 2, ..., d/2]}
+        # This provides the long-term decay property
+        inv_freq = 1.0 / (10000 ** (jnp.arange(0, self.d_model, 2).astype(jnp.float32) / self.d_model))
+        
+        # Precompute cos and sin for all positions up to max_len
+        # Shape: (max_len, d_model/2)
+        position = jnp.arange(self.max_len, dtype=jnp.float32)
+        freqs = jnp.outer(position, inv_freq)  # (max_len, d_model/2)
+        
+        # Store cos and sin - these are NOT trainable parameters
+        self.cos_cached = jnp.cos(freqs)  # (max_len, d_model/2)
+        self.sin_cached = jnp.sin(freqs)  # (max_len, d_model/2)
+    
+    def apply_rotary_embedding(self, x, seq_len):
+        """Apply rotary embedding using equation (34) from the paper.
+        
+        The paper shows a computationally efficient realization:
+        R^d_{Θ,m} x = [x1, x2, x3, x4, ...] ⊗ [cos mθ1, cos mθ1, cos mθ2, cos mθ2, ...]
+                     + [-x2, x1, -x4, x3, ...] ⊗ [sin mθ1, sin mθ1, sin mθ2, sin mθ2, ...]
+        
+        Args:
+            x: Input tensor of shape (B, T, D)
+            seq_len: Sequence length T
+        Returns:
+            Rotated tensor of shape (B, T, D)
+        """
+        # Get cos and sin for current sequence length
+        cos = self.cos_cached[:seq_len]  # (T, d_model/2)
+        sin = self.sin_cached[:seq_len]  # (T, d_model/2)
+        
+        # Repeat each element twice: [a, b, c] -> [a, a, b, b, c, c]
+        # This matches equation (34) structure
+        cos = jnp.repeat(cos, 2, axis=-1)  # (T, d_model)
+        sin = jnp.repeat(sin, 2, axis=-1)  # (T, d_model)
+        
+        # Add batch dimension for broadcasting
+        cos = cos[None, :, :]  # (1, T, d_model)
+        sin = sin[None, :, :]  # (1, T, d_model)
+        
+        # Following equation (34): create the rotated version [-x2, x1, -x4, x3, ...]
+        # Split into pairs and swap with negation
+        x_reshape = x.reshape(x.shape[0], x.shape[1], -1, 2)  # (B, T, d_model/2, 2)
+        x_rotated = jnp.stack([-x_reshape[..., 1], x_reshape[..., 0]], axis=-1)  # (B, T, d_model/2, 2)
+        x_rotated = x_rotated.reshape(x.shape)  # (B, T, d_model)
+        
+        # Apply rotation: equation (34)
+        return x * cos + x_rotated * sin
 
+class RoPEAttention(nn.Module):
+    """Multi-head Self-Attention with RoPE.
+    
+    Applies RoPE to queries and keys before computing attention,
+    following equation (16) from the paper:
+    q^T_m k_n = (R^d_{Θ,m} W_q x_m)^T (R^d_{Θ,n} W_k x_n)
+    
+    Args:
+        d_model: Hidden size D.
+        n_heads: Number of attention heads.
+        max_len: Maximum sequence length.
+    """
+    d_model: int
+    n_heads: int
+    max_len: int
+    
+    def setup(self):
+        assert self.d_model % self.n_heads == 0, "d_model must be divisible by n_heads"
+        self.d_head = self.d_model // self.n_heads
+        
+        # Standard QKV projections (equation (1) in paper)
+        self.wq = nn.Dense(self.d_model, use_bias=False)
+        self.wk = nn.Dense(self.d_model, use_bias=False)
+        self.wv = nn.Dense(self.d_model, use_bias=False)
+        self.wo = nn.Dense(self.d_model, use_bias=False)
+        
+        # RoPE for positional encoding
+        self.rope = RotaryPositionalEmbedding(self.d_model, self.max_len)
+    
+    def __call__(self, x, mask=None):
+        """
+        Args:
+            x: Input of shape (B, T, D)
+            mask: Attention mask
+        Returns:
+            Output of shape (B, T, D)
+        """
+        B, T, D = x.shape
+        
+        # Linear projections: equation (1) from paper
+        q = self.wq(x)  # (B, T, D)
+        k = self.wk(x)  # (B, T, D)
+        v = self.wv(x)  # (B, T, D)
+        
+        # Apply RoPE to queries and keys: equation (14) from paper
+        # f_q(x_m, m) = R^d_{Θ,m} W_q x_m
+        # f_k(x_n, n) = R^d_{Θ,n} W_k x_n
+        q = self.rope.apply_rotary_embedding(q, T)
+        k = self.rope.apply_rotary_embedding(k, T)
+        
+        # Reshape for multi-head attention
+        q = q.reshape(B, T, self.n_heads, self.d_head).transpose(0, 2, 1, 3)  # (B, n_heads, T, d_head)
+        k = k.reshape(B, T, self.n_heads, self.d_head).transpose(0, 2, 1, 3)  # (B, n_heads, T, d_head)
+        v = v.reshape(B, T, self.n_heads, self.d_head).transpose(0, 2, 1, 3)  # (B, n_heads, T, d_head)
+        
+        # Scaled dot-product attention: equation (2) from paper
+        scores = jnp.matmul(q, k.transpose(0, 1, 3, 2)) / jnp.sqrt(self.d_head)  # (B, n_heads, T, T)
+        
+        # Apply causal mask if provided
+        if mask is not None:
+            scores = jnp.where(mask, scores, -1e10)
+        
+        # Attention weights and output
+        attn_weights = jax.nn.softmax(scores, axis=-1)  # (B, n_heads, T, T)
+        attn_output = jnp.matmul(attn_weights, v)  # (B, n_heads, T, d_head)
+        
+        # Reshape and project output
+        attn_output = attn_output.transpose(0, 2, 1, 3).reshape(B, T, D)  # (B, T, D)
+        output = self.wo(attn_output)  # (B, T, D)
+        
+        return output
+    
+class DecoderBlock(nn.Module):
+    """A single decoder block supporting both standard and RoPE attention.
+    
+    Args:
+        d_model: Hidden size D.
+        n_heads: Number of attention heads.
+        mlp_ratio: MLP expansion ratio.
+        use_rope: Whether to use RoPE attention.
+        max_len: Maximum sequence length (needed for RoPE).
+    """
     d_model: int
     n_heads: int
     mlp_ratio: int = 4
-
+    use_rope: bool = False
+    max_len: int = 128
+    
     @nn.compact
     def __call__(self, x, *, mask=None):
-        # Attention sublayer: Pre-LayerNorm -> Self-Attention -> Residual add
+        # Pre-LayerNorm
         h = nn.LayerNorm()(x)
-        h = nn.SelfAttention(
-            num_heads=self.n_heads,
-            use_bias=False,
-        )(h, mask=mask)
-        x = x + h  # residual connection
-
-        # MLP sublayer: Pre-LayerNorm -> MLP -> Residual add
+        
+        # Attention sublayer
+        if self.use_rope:
+            # Use RoPE attention (equation 14-16 from paper)
+            h = RoPEAttention(
+                d_model=self.d_model,
+                n_heads=self.n_heads,
+                max_len=self.max_len
+            )(h, mask=mask)
+        else:
+            # Standard attention (equation 3 from paper)
+            h = nn.SelfAttention(
+                num_heads=self.n_heads,
+                use_bias=False,
+            )(h, mask=mask)
+        
+        x = x + h  # Residual
+        
+        # MLP sublayer
         h = nn.LayerNorm()(x)
         h = MLP(self.d_model, mlp_ratio=self.mlp_ratio)(h)
-        x = x + h  # residual connection
+        x = x + h  # Residual
+        
         return x
     
 class SinusoidalPositionalEncoding(nn.Module):
@@ -221,11 +369,14 @@ class DecoderOnlyTransformer(nn.Module):
             raise ValueError(f"Unknown pos_encoding_type: {self.pos_encoding_type}")
         
         # Stack of decoder blocks
+        use_rope = (self.pos_encoding_type == 'rotary')
         self.blocks = [
             DecoderBlock(
                 d_model=self.d_model,
                 n_heads=self.n_heads,
-                mlp_ratio=self.mlp_ratio
+                mlp_ratio=self.mlp_ratio,
+                use_rope=use_rope,
+                max_len=self.max_len
             ) for _ in range(self.n_layers)
         ]
         
