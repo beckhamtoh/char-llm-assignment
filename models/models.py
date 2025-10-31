@@ -13,7 +13,7 @@ Tensor shape conventions used below:
 - D: hidden size / embedding dimension (d_model)
 - V: vocabulary size
 """
-
+import jax 
 import jax.numpy as jnp
 import flax.linen as nn
 from flax.linen import attention as attn
