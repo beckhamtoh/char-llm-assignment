@@ -532,29 +532,27 @@ class CharLSTM(nn.Module):
     
 
 ### run only when predicting multiple future tokens
-'''
-class DecoderOnlyTransformer(nn.Module):
-    vocab_size: int
-    d_model: int
-    n_layers: int
-    n_heads: int
-    max_len: int
-    n_future: int = 1  # NEW: number of future tokens to predict
+# class DecoderOnlyTransformer(nn.Module):
+#     vocab_size: int
+#     d_model: int
+#     n_layers: int
+#     n_heads: int
+#     max_len: int
+#     n_future: int = 1  # NEW: number of future tokens to predict
     
-    def setup(self):
-        # ... your existing embedding, positional encoding, transformer blocks ...
+#     def setup(self):
+#         # ... your existing embedding, positional encoding, transformer blocks ...
         
-        # Modify output head to predict n_future tokens
-        if self.n_future == 1:
-            self.output_head = nn.Dense(self.vocab_size)
-        else:
-            # Output n_future * vocab_size logits
-            self.output_head = nn.Dense(self.n_future * self.vocab_size)
+#         # Modify output head to predict n_future tokens
+#         if self.n_future == 1:
+#             self.output_head = nn.Dense(self.vocab_size)
+#         else:
+#             # Output n_future * vocab_size logits
+#             self.output_head = nn.Dense(self.n_future * self.vocab_size)
     
-    def __call__(self, x):
-        # ... your existing transformer forward pass ...
-        # h = self.transformer_blocks(embedded_x)
+#     def __call__(self, x):
+#         # ... your existing transformer forward pass ...
+#         # h = self.transformer_blocks(embedded_x)
         
-        logits = self.output_head(h)  # (B, T, V) or (B, T, n_future*V)
-        return logits
-'''
+#         logits = self.output_head(h)  # (B, T, V) or (B, T, n_future*V)
+#         return logits
