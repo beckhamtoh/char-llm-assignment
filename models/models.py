@@ -531,7 +531,8 @@ class CharLSTM(nn.Module):
         return logits
     
 
-
+### run only when predicting multiple future tokens
+'''
 class DecoderOnlyTransformer(nn.Module):
     vocab_size: int
     d_model: int
@@ -556,3 +557,4 @@ class DecoderOnlyTransformer(nn.Module):
         
         logits = self.output_head(h)  # (B, T, V) or (B, T, n_future*V)
         return logits
+'''
