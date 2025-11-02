@@ -504,6 +504,9 @@ class CharLSTM(nn.Module):
         
         # Token embeddings -> (B, T, D)
         x = self.tok_embed(idx)
+
+        # Dropout on embeddings
+        x = self.dropout(x, deterministic=deterministic)
         
         # Initialize LSTM states for all layers
         if init_state is None:
@@ -525,12 +528,19 @@ class CharLSTM(nn.Module):
                 (c, h) = carry[layer_idx]
                 (c, h), xt = self.lstm_cells[layer_idx](carry[layer_idx], xt)
                 carry[layer_idx] = (c, h)
+
+                # Dropout between layers
+                if layer_idx < self.n_layers - 1:  # Not on last layer
+                    xt = self.dropout(xt, deterministic=deterministic)
             
             outputs.append(xt)
         
         # Stack outputs -> (B, T, D)
         x = jnp.stack(outputs, axis=1)
         
+        # Dropout before output projection
+        x = self.dropout(x, deterministic=deterministic)
+
         # Project to vocabulary -> (B, T, V)
         logits = self.project_to_vocab(x)
         
