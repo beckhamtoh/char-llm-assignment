@@ -477,6 +477,7 @@ class CharLSTM(nn.Module):
     vocab_size: int
     d_model: int
     n_layers: int
+    dropout_rate: float = 0.1 
     
     def setup(self):
         # Token embedding table E with shape (V, D)
@@ -484,6 +485,8 @@ class CharLSTM(nn.Module):
         
         # Stack of LSTM cells - each needs to know the hidden dimension
         self.lstm_cells = [nn.LSTMCell(features=self.d_model) for _ in range(self.n_layers)]
+
+        self.dropout = nn.Dropout(rate=self.dropout_rate)
         
         # Output projection to vocabulary
         self.project_to_vocab = nn.Dense(self.vocab_size, use_bias=False)
