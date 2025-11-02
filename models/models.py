@@ -488,14 +488,17 @@ class CharLSTM(nn.Module):
         # Output projection to vocabulary
         self.project_to_vocab = nn.Dense(self.vocab_size, use_bias=False)
     
-    def __call__(self, idx):
+    def __call__(self, idx, init_state=None, deterministic=True):
         """Forward pass.
         
         Args:
             idx: Token ids of shape (B, T), dtype int32/int64.
+            init_state: Optional initial LSTM state. List of (c, h) tuples for each layer.
+            deterministic: Unused, for compatibility with transformer interface.
             
         Returns:
             logits: (B, T, V) unnormalized vocabulary scores for next-token prediction.
+            final_state: List of (c, h) tuples representing final LSTM state.
         """
         B, T = idx.shape
         
@@ -503,11 +506,14 @@ class CharLSTM(nn.Module):
         x = self.tok_embed(idx)
         
         # Initialize LSTM states for all layers
-        carry = []
-        for layer_idx in range(self.n_layers):
-            c = jnp.zeros((B, self.d_model))
-            h = jnp.zeros((B, self.d_model))
-            carry.append((c, h))
+        if init_state is None:
+            carry = []
+            for layer_idx in range(self.n_layers):
+                c = jnp.zeros((B, self.d_model))
+                h = jnp.zeros((B, self.d_model))
+                carry.append((c, h))
+        else:
+            carry = init_state
         
         # Process sequence step by step
         outputs = []
@@ -528,7 +534,7 @@ class CharLSTM(nn.Module):
         # Project to vocabulary -> (B, T, V)
         logits = self.project_to_vocab(x)
         
-        return logits
+        return logits, carry  
     
 
 ### run only when predicting multiple future tokens
