@@ -30,4 +30,5 @@ This repository contains a minimal character-level Transformer (decoder-only) im
 - `optimisation_small_expts.ipynb` - Small-scale optimization tests
 - `optimisation.ipynb` - General optimization experiments
 - `predicting_multi_char.ipynb` - Multi-character prediction experiments
+- `transformer.ipynb` - Initial transformer configuration (given)
 - `transformer_FINAL.ipynb` - Final transformer configuration
