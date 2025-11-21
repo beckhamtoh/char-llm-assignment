@@ -1,20 +1,33 @@
 # Basic Transformer For next character prediction
 
-This repository contains a minimal character-level Transformer (decoder-only) implemented in JAX/Flax for next-character prediction. 
+This repository contains a minimal character-level Transformer (decoder-only) implemented in JAX/Flax for next-character prediction.
 
-Repository structure
---------------------
+## Repository structure
 
-Top-level layout:
+# Character-Level Language Model Research
 
-- `transformer.ipynb` - Primary Jupyter notebook used for experimenting, training and generation. The notebook contains data loading, model initialization, training loop, and a JITted token generator cell.
-- `models/` - Python package containing the Flax model implementation.
-	- `models/models.py` - Minimal, decoder-only Transformer implementation (token & positional embeddings, DecoderBlocks, MLP, weight tying, causal attention).
-- `data/` - a preprocessed `text8_dataset` used in the notebook.
+## Project Structure
 
+### data
 
-Notes and pointers
-------------------
+- `text8_test.txt` - Test dataset
+- `text8_train.txt` - Training dataset
 
-- The notebook and model are intentionally small and pedagogical. They are a good starting point.
-- The performance of the implemented model is (extremely) bad. There is a large room for experimentation and improvement.
+### models
+
+- `models.py` - Core model architecture definitions
+
+### util
+
+- `util/generation.py` - Autoregressive text generation with temperature sampling
+
+### Notebooks
+
+- `final_transformer2.ipynb` - Alternative transformer configuration
+- `metrics_and_loss_FINAL.ipynb` - Final loss tracking and metrics analysis
+- `model_tuning_positional.ipynb` - Positional encoding comparison experiments
+- `model_tuning_scaling_law.ipynb` - Scaling laws analysis and fitting
+- `optimisation_scaled.ipynb` - Scaled optimization experiments
+- `optimisation_small_expts.ipynb` - Small-scale optimization tests
+- `optimisation.ipynb` - General optimization experiments
+- `predicting_multi_char.ipynb` - Multi-character prediction experiments
