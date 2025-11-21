@@ -23,7 +23,6 @@ This repository contains a minimal character-level Transformer (decoder-only) im
 
 ### Notebooks
 
-- `final_transformer2.ipynb` - Alternative transformer configuration
 - `metrics_and_loss_FINAL.ipynb` - Final loss tracking and metrics analysis
 - `model_tuning_positional.ipynb` - Positional encoding comparison experiments
 - `model_tuning_scaling_law.ipynb` - Scaling laws analysis and fitting
@@ -31,3 +30,4 @@ This repository contains a minimal character-level Transformer (decoder-only) im
 - `optimisation_small_expts.ipynb` - Small-scale optimization tests
 - `optimisation.ipynb` - General optimization experiments
 - `predicting_multi_char.ipynb` - Multi-character prediction experiments
+- `transformer_FINAL.ipynb` - Alternative transformer configuration
